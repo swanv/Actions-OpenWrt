@@ -1,160 +1,84 @@
-#
-# https://github.com/P3TERX/Actions-OpenWrt
-#
-# File: .github/workflows/openwrt-bulder.yml
-# Description: Build OpenWrt using GitHub Actions
-#
-# Copyright (c) 2019-2024 P3TERX <https://p3terx.com>
-#
-# This is free software, licensed under the MIT License.
-# See /LICENSE for more information.
-#
+name: Build JDCloud2.0-IPQ4019 (P&W R619AC-128m) OpenWrt
 
-name: OpenWrt Builder
-
+# 仅手动触发编译（避免自动消耗额度）
 on:
-  repository_dispatch:
   workflow_dispatch:
 
-env:
-  REPO_URL: https://github.com/coolsnowwolf/lede
-  REPO_BRANCH: master
-  FEEDS_CONF: feeds.conf.default
-  CONFIG_FILE: .config
-  DIY_P1_SH: diy-part1.sh
-  DIY_P2_SH: diy-part2.sh
-  UPLOAD_BIN_DIR: false
-  UPLOAD_FIRMWARE: true
-  UPLOAD_RELEASE: true
-  TZ: Asia/Shanghai
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
-    - name: Checkout
-      uses: actions/checkout@main
+      # 1. 拉取仓库代码
+      - name: Checkout
+        uses: actions/checkout@main
 
-    - name: Initialization environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-        sudo docker image prune --all --force
-        sudo -E apt-get -qq update
-        sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
-        sudo -E apt-get -qq autoremove --purge
-        sudo -E apt-get -qq clean
-        sudo timedatectl set-timezone "$TZ"
-        sudo mkdir -p /workdir
-        sudo chown $USER:$GROUPS /workdir
+      # 2. 安装IPQ4019编译依赖
+      - name: Initialization environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt update -y
+          sudo apt full-upgrade -y
+          # 基础依赖
+          sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pip libpython3-dev qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+          # IPQ4019额外依赖（NAND闪存+高通无线）
+          sudo apt install -y mtd-utils nand-utils libssl-dev libnl-3-dev libnl-genl-3-dev
 
-    - name: Clone source code
-      working-directory: /workdir
-      run: |
-        df -hT $PWD
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
-        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+      # 3. 下载Lean's LEDE源码（已适配R619AC-128m）
+      - name: Download source code
+        run: |
+          git clone --depth=1 https://github.com/coolsnowwolf/lede openwrt
+          cd openwrt
+          # 更新软件包源
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-    - name: Load custom feeds
-      run: |
-        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
-        chmod +x $DIY_P1_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P1_SH
+      # 4. 配置R619AC-128m编译参数（核心！精准适配）
+      - name: Configure P&W R619AC-128m firmware
+        run: |
+          cd openwrt
+          # 加载ipq40xx/generic基础配置
+          make defconfig TARGET=ipq40xx SUBTARGET=generic
+          # 指定设备型号（128MB NAND版本）
+          echo "CONFIG_TARGET_DEVICE_ipq40xx_generic_DEVICE_p2w_r619ac-128m=y" >> .config
+          # 启用无线固件（QCA9886+QCA9887，必须添加）
+          echo "CONFIG_PACKAGE_ipq-wifi-p2w_r619ac=y" >> .config
+          # 启用无线驱动
+          echo "CONFIG_PACKAGE_kmod-ath10k=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-ath10k-ct=y" >> .config
+          echo "CONFIG_PACKAGE_ath10k-firmware-qca9886=y" >> .config
+          echo "CONFIG_PACKAGE_ath10k-firmware-qca9887=y" >> .config
+          # 常用功能包（可按需增删）
+          echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config       # 科学上网
+          echo "CONFIG_PACKAGE_luci-app-ddns=y" >> .config          # DDNS
+          echo "CONFIG_PACKAGE_luci-app-samba4=y" >> .config        # 网络共享
+          echo "CONFIG_PACKAGE_luci-app-adguardhome=y" >> .config   # 去广告
+          echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config       # 美化主题
+          echo "CONFIG_PACKAGE_luci-app-openclash=y" >> .config     #  clash代理
+          # 优化编译选项（IPQ4019性能提升）
+          echo "CONFIG_CPU_TYPE=\"cortex-a7\"" >> .config
+          echo "CONFIG_EXTRA_OPTIMIZATION=\"-O2 -pipe -mtune=cortex-a7\"" >> .config
+          # 生成最终配置
+          make defconfig
 
-    - name: Update feeds
-      run: cd openwrt && ./scripts/feeds update -a
+      # 5. 编译固件（自动处理NAND分区）
+      - name: Build firmware
+        run: |
+          cd openwrt
+          # 下载依赖包（解决IPQ40xx无线固件下载问题）
+          make -j$(nproc) download V=s
+          # 删除损坏的依赖包
+          find dl -size -1024c -exec rm -f {} \;
+          # 编译（失败时单线程重试，确保兼容性）
+          make -j$(nproc) V=s || make -j1 V=s
 
-    - name: Install feeds
-      run: cd openwrt && ./scripts/feeds install -a
-
-    - name: Load custom configuration
-      run: |
-        [ -e files ] && mv files openwrt/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-        chmod +x $DIY_P2_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P2_SH
-
-    - name: Download package
-      id: package
-      run: |
-        cd openwrt
-        make defconfig
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
-
-    - name: Compile the firmware
-      id: compile
-      run: |
-        cd openwrt
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
-        echo "status=success" >> $GITHUB_OUTPUT
-        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
-        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
-
-    - name: Check space usage
-      if: (!cancelled())
-      run: df -hT
-
-    - name: Upload bin directory
-      uses: actions/upload-artifact@main
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      with:
-        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: openwrt/bin
-
-    - name: Organize files
-      id: organize
-      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
-      run: |
-        cd openwrt/bin/targets/*/*
-        rm -rf packages
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
-
-    - name: Upload firmware directory
-      uses: actions/upload-artifact@main
-      if: steps.organize.outputs.status == 'success' && !cancelled()
-      with:
-        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE }}
-
-    - name: Generate release tag
-      id: tag
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-      run: |
-        echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
-        touch release.txt
-        [ ${UPLOAD_GOFILE} = true && ${{ steps.gofile.outputs.url }} ] && echo "🔗 [GoFile](${{ steps.gofile.outputs.url }})" >> release.txt
-        echo "status=success" >> $GITHUB_OUTPUT
-
-    - name: Upload firmware to release
-      uses: softprops/action-gh-release@master
-      if: steps.tag.outputs.status == 'success' && !cancelled()
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        body_path: release.txt
-        files: ${{ env.FIRMWARE }}/*
-
-    - name: Delete workflow runs
-      uses: Mattraks/delete-workflow-runs@main
-      with:
-        retain_days: 0
-        keep_minimum_runs: 2
-
-    - name: Remove old Releases
-      uses: dev-drprasad/delete-older-releases@master
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-      with:
-        keep_latest: 3
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 6. 上传固件到GitHub Artifacts
+      - name: Upload firmware
+        uses: actions/upload-artifact@main
+        with:
+          name: R619AC-128m-OpenWrt-Firmware
+          path: openwrt/bin/targets/ipq40xx/generic/
